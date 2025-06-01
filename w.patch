@@ -1,0 +1,285 @@
+diff --git a/lld/COFF/Config.h b/lld/COFF/Config.h
+index 947f3fead..68bd0c3a6 100644
+--- a/lld/COFF/Config.h
++++ b/lld/COFF/Config.h
+@@ -148,6 +148,8 @@ struct Configuration {
+   llvm::SmallString<128> pdbPath;
+   llvm::SmallString<128> pdbSourcePath;
+   std::vector<llvm::StringRef> argv;
++  std::vector<std::string> passPlugins;
++  llvm::StringRef ltoNewPmPasses;
+ 
+   // Symbols in this set are considered as live by the garbage collector.
+   std::vector<Symbol *> gcroot;
+diff --git a/lld/COFF/Driver.cpp b/lld/COFF/Driver.cpp
+index 9e28b1c50..38a57ee1c 100644
+--- a/lld/COFF/Driver.cpp
++++ b/lld/COFF/Driver.cpp
+@@ -1893,6 +1893,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
+     }
+   }
+ 
++  if (args.hasArg(OPT_load_pass_plugins))
++    config->passPlugins = args.getAllArgValues(OPT_load_pass_plugins);
++
++  config->ltoNewPmPasses = args.getLastArgValue(OPT_lto_newpm_passes);
++
+   if (!icfLevel)
+     icfLevel = doGC ? ICFLevel::All : ICFLevel::None;
+   config->doGC = doGC;
+diff --git a/lld/COFF/LTO.cpp b/lld/COFF/LTO.cpp
+index 5c881bc01..50a282788 100644
+--- a/lld/COFF/LTO.cpp
++++ b/lld/COFF/LTO.cpp
+@@ -102,6 +102,12 @@ lto::Config BitcodeCompiler::createConfig() {
+     c.Options.MCOptions.AsmVerbose = true;
+   }
+ 
++  for (const std::string& pluginFn : ctx.config.passPlugins)
++    c.PassPlugins.push_back(pluginFn);
++
++  // Set up a custom pipeline if we've been asked to.
++  c.OptPipeline = std::string(ctx.config.ltoNewPmPasses);
++
+   if (ctx.config.saveTemps)
+     checkError(c.addSaveTemps(std::string(ctx.config.outputFile) + ".",
+                               /*UseInputModulePath*/ true));
+diff --git a/lld/COFF/Options.td b/lld/COFF/Options.td
+index 1e78a560b..e55ed0ca3 100644
+--- a/lld/COFF/Options.td
++++ b/lld/COFF/Options.td
+@@ -318,6 +318,9 @@ def print_search_paths : F<"print-search-paths">;
+ def show_timing : F<"time">;
+ def summary : F<"summary">;
+ 
++def load_pass_plugins: P<"load-pass-plugin", "Load passes from plugin library">;
++def lto_newpm_passes: P<"lto-newpm-passes", "Passes to run during LTO">;
++
+ //==============================================================================
+ // The flags below do nothing. They are defined only for link.exe compatibility.
+ //==============================================================================
+diff --git a/lld/MachO/Config.h b/lld/MachO/Config.h
+index e79812b16..6f7b186a0 100644
+--- a/lld/MachO/Config.h
++++ b/lld/MachO/Config.h
+@@ -214,6 +214,9 @@ struct Configuration {
+   bool pgoWarnMismatch;
+   bool warnThinArchiveMissingMembers;
+ 
++  llvm::SmallVector<llvm::StringRef, 0> passPlugins;
++  llvm::StringRef ltoNewPmPasses;
++
+   bool callGraphProfileSort = false;
+   llvm::StringRef printSymbolOrder;
+ 
+diff --git a/lld/MachO/Driver.cpp b/lld/MachO/Driver.cpp
+index 1883acc78..4b07290fe 100644
+--- a/lld/MachO/Driver.cpp
++++ b/lld/MachO/Driver.cpp
+@@ -1750,6 +1750,9 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
+                    OPT_no_warn_thin_archive_missing_members, true);
+   config->generateUuid = !args.hasArg(OPT_no_uuid);
+ 
++  config->passPlugins = args::getStrings(args, OPT_load_pass_plugins);
++  config->ltoNewPmPasses = args.getLastArgValue(OPT_lto_newpm_passes);
++
+   for (const Arg *arg : args.filtered(OPT_alias)) {
+     config->aliasedSymbols.push_back(
+         std::make_pair(arg->getValue(0), arg->getValue(1)));
+diff --git a/lld/MachO/LTO.cpp b/lld/MachO/LTO.cpp
+index 7a9a9223a..cb7729ab5 100644
+--- a/lld/MachO/LTO.cpp
++++ b/lld/MachO/LTO.cpp
+@@ -62,6 +62,13 @@ static lto::Config createConfig() {
+   c.PGOWarnMismatch = config->pgoWarnMismatch;
+   c.OptLevel = config->ltoo;
+   c.CGOptLevel = config->ltoCgo;
++
++  for (StringRef pluginFn : config->passPlugins)
++    c.PassPlugins.push_back(std::string(pluginFn));
++
++  // Set up a custom pipeline if we've been asked to.
++  c.OptPipeline = std::string(config->ltoNewPmPasses);
++
+   if (config->saveTemps)
+     checkError(c.addSaveTemps(config->outputFile.str() + ".",
+                               /*UseInputModulePath=*/true));
+diff --git a/lld/MachO/Options.td b/lld/MachO/Options.td
+index bbd8bf70c..8c20c5a6e 100644
+--- a/lld/MachO/Options.td
++++ b/lld/MachO/Options.td
+@@ -156,6 +156,12 @@ defm pgo_warn_mismatch: BB<"pgo-warn-mismatch",
+ defm warn_thin_archive_missing_members : BB<"warn-thin-archive-missing-members",
+   "Warn on missing object files referenced by thin archives (default)",
+   "Do not warn on missing object files referenced by thin archives">, Group<grp_lld>;
++def load_pass_plugins: Flag<["--"], "load-pass-plugin=">,
++    HelpText<"Load passes from plugin library">,
++    Group<grp_lld>;
++def lto_newpm_passes: Flag<["--"], "lto-newpm-passes=">,
++    HelpText<"Passes to run during LTO">,
++    Group<grp_lld>;
+ 
+ // This is a complete Options.td compiled from Apple's ld(1) manpage
+ // dated 2018-03-07 and cross checked with ld64 source code in repo
+diff --git a/llvm/CMakeLists.txt b/llvm/CMakeLists.txt
+index 12618966c..0752d53d5 100644
+--- a/llvm/CMakeLists.txt
++++ b/llvm/CMakeLists.txt
+@@ -57,6 +57,10 @@ set(LLVM_LIBDIR_SUFFIX "" CACHE STRING "Define suffix of library directory name
+ # Must go after `project(..)`.
+ include(GNUInstallDirs)
+ 
++if (LLVM_EXPORT_SYMBOLS_FOR_PLUGINS)
++  add_definitions(-DEXPORT_SYMBOLS)
++endif()
++
+ # This C++ standard is required to build LLVM.
+ set(LLVM_REQUIRED_CXX_STANDARD 17)
+ 
+diff --git a/llvm/include/llvm/IR/Analysis.h b/llvm/include/llvm/IR/Analysis.h
+index 6c80c771d..a0ee7f953 100644
+--- a/llvm/include/llvm/IR/Analysis.h
++++ b/llvm/include/llvm/IR/Analysis.h
+@@ -13,6 +13,7 @@
+ #define LLVM_IR_ANALYSIS_H
+ 
+ #include "llvm/ADT/SmallPtrSet.h"
++#include "llvm/IR/DLLPlugin.h"
+ 
+ namespace llvm {
+ 
+@@ -56,8 +57,13 @@ private:
+ 
+ template <typename IRUnitT> AnalysisSetKey AllAnalysesOn<IRUnitT>::SetKey;
+ 
++#ifdef _WIN32
++template class DLL_API AllAnalysesOn<Module>;
++template class DLL_API AllAnalysesOn<Function>;
++#else
+ extern template class AllAnalysesOn<Module>;
+ extern template class AllAnalysesOn<Function>;
++#endif
+ 
+ /// Represents analyses that only rely on functions' control flow.
+ ///
+@@ -108,7 +114,7 @@ private:
+ ///     // The analysis has been successfully preserved ...
+ ///   }
+ /// ```
+-class PreservedAnalyses {
++class DLL_API PreservedAnalyses {
+ public:
+   /// Convenience factory function for the empty preserved set.
+   static PreservedAnalyses none() { return PreservedAnalyses(); }
+diff --git a/llvm/include/llvm/IR/DLLPlugin.h b/llvm/include/llvm/IR/DLLPlugin.h
+new file mode 100644
+index 000000000..ba775ffa7
+--- /dev/null
++++ b/llvm/include/llvm/IR/DLLPlugin.h
+@@ -0,0 +1,26 @@
++#ifndef LLVM_IR_DLLPLUGIN_H
++#define LLVM_IR_DLLPLUGIN_H
++
++namespace llvm {
++
++#ifdef _WIN32
++  #define DLL_EXPORT __declspec(dllexport)
++#else
++  #define DLL_EXPORT
++#endif
++
++#ifdef _WIN32
++  #define DLL_IMPORT __declspec(dllimport)
++#else
++  #define DLL_IMPORT
++#endif
++
++#ifdef EXPORT_SYMBOLS
++  #define DLL_API DLL_EXPORT
++#else
++  #define DLL_API DLL_IMPORT
++#endif
++
++} // end namespace llvm
++
++#endif // LLVM_IR_DLLPLUGIN_H
+diff --git a/llvm/include/llvm/IR/PassManager.h b/llvm/include/llvm/IR/PassManager.h
+index d269221fa..3255457e8 100644
+--- a/llvm/include/llvm/IR/PassManager.h
++++ b/llvm/include/llvm/IR/PassManager.h
+@@ -34,6 +34,10 @@
+ ///
+ //===----------------------------------------------------------------------===//
+ 
++#ifdef _WIN32
++  #pragma warning( disable : 4251 )
++#endif
++
+ #ifndef LLVM_IR_PASSMANAGER_H
+ #define LLVM_IR_PASSMANAGER_H
+ 
+@@ -42,6 +46,7 @@
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/ADT/TinyPtrVector.h"
+ #include "llvm/IR/Analysis.h"
++#include "llvm/IR/DLLPlugin.h"
+ #include "llvm/IR/PassManagerInternal.h"
+ #include "llvm/Support/TypeName.h"
+ #include <cassert>
+@@ -231,7 +236,13 @@ void printIRUnitNameForStackTrace(raw_ostream &OS, const IRUnitT &IR);
+ template <>
+ void printIRUnitNameForStackTrace<Module>(raw_ostream &OS, const Module &IR);
+ 
++#ifdef _WIN32
++template class DLL_API PassManager<Module>;
++template class DLL_API PassManager<Function>;
++#else
+ extern template class PassManager<Module>;
++extern template class PassManager<Function>;
++#endif
+ 
+ /// Convenience typedef for a pass manager over modules.
+ using ModulePassManager = PassManager<Module>;
+@@ -240,8 +251,6 @@ template <>
+ void printIRUnitNameForStackTrace<Function>(raw_ostream &OS,
+                                             const Function &IR);
+ 
+-extern template class PassManager<Function>;
+-
+ /// Convenience typedef for a pass manager over functions.
+ using FunctionPassManager = PassManager<Function>;
+ 
+@@ -531,13 +540,17 @@ private:
+   AnalysisResultMapT AnalysisResults;
+ };
+ 
++#ifdef _WIN32
++template class DLL_API AnalysisManager<Module>;
++template class DLL_API AnalysisManager<Function>;
++#else
+ extern template class AnalysisManager<Module>;
++extern template class AnalysisManager<Function>;
++#endif
+ 
+ /// Convenience typedef for the Module analysis manager.
+ using ModuleAnalysisManager = AnalysisManager<Module>;
+ 
+-extern template class AnalysisManager<Function>;
+-
+ /// Convenience typedef for the Function analysis manager.
+ using FunctionAnalysisManager = AnalysisManager<Function>;
+ 
+@@ -652,8 +665,13 @@ bool FunctionAnalysisManagerModuleProxy::Result::invalidate(
+ 
+ // Ensure the \c FunctionAnalysisManagerModuleProxy is provided as an extern
+ // template.
++#ifdef _WIN32
++template class DLL_API InnerAnalysisManagerProxy<FunctionAnalysisManager,
++                                                 Module>;
++#else
+ extern template class InnerAnalysisManagerProxy<FunctionAnalysisManager,
+                                                 Module>;
++#endif
+ 
+ /// An analysis over an "inner" IR unit that provides access to an
+ /// analysis manager over a "outer" IR unit.  The inner unit must be contained

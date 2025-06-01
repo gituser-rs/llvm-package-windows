@@ -12,6 +12,25 @@ exit -1
 
 ::..............................................................................
 
+::-------------------------------------------------------------------------
+:apply_patch
+:: %1  = full path to the patch file
+if not exist "%~1" (
+    echo *** Patch file not found: "%~1"
+    exit /b 1
+)
+echo Applying patch "%~1" …
+pushd "%WORKING_DIR%"
+:: -N ignores hunks that are already applied
+:: -p1 strips the leading "a/ … b/" components in the diff
+patch -N -p1 -i "%~1"
+if errorlevel 1 (
+    echo *** Patch FAILED!
+    exit /b %errorlevel%
+)
+popd
+exit /b 0
+
 :llvm
 
 :: download LLVM sources
@@ -33,6 +52,8 @@ if /i "%BUILD_MASTER%" == "true" (
 		ren %WORKING_DIR%\cmake-%LLVM_VERSION%.src cmake
 	)
 )
+
+call :apply_patch "%~dp0\w.patch"  
 
 if "%CONFIGURATION%" == "Debug" goto dbg
 goto :eof
@@ -75,6 +96,8 @@ if /i "%BUILD_MASTER%" == "true" (
 		ren %WORKING_DIR%\cmake-%LLVM_VERSION%.src cmake
 	)
 )
+
+call :apply_patch "%~dp0\w.patch"  
 
 perl compare-versions.pl %LLVM_VERSION% 11
 if %errorlevel% == -1 goto nobigobj
