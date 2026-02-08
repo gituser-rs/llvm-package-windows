@@ -9,11 +9,10 @@ jobs:
         name: Windows Build
         runs-on: windows-2022
         env:
-            BUILD_PROJECT: llvm-project
+            BUILD_PROJECT: llvm
             BUILD_MASTER: false
             LLVM_VERSION: 22.1.0-rc2
-# https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0-rc2/clang-22.1.0-rc2.src.tar.xz
-# https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0-rc2/llvm-project-22.1.0-rc2.src.tar.xz
+            
         strategy:
             fail-fast: false
             matrix:
